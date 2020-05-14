@@ -1,6 +1,7 @@
 ---
 title: "publication_Miscanthus_16s_microbiome"
 output: html_document
+data: "`r Sys.Date()"
 ---
 
 ```{r setup, include=FALSE}
@@ -43,6 +44,16 @@ sample_data(ps)<- metadata
 To prune out ASVs that are bigger than 10
 ```{r}
 ps.1 <- prune_species(speciesSums(ps)>=10, ps)
+
+# add Block number
+sample_data(ps.1)$Block <- NULL
+sample_data(ps.1)$Block <- ifelse(sample_data(ps.1)$Plot %in% c("3","4","5","6","7","9","12","13","14"), "1",
+                                                   ifelse (sample_data(ps.1)$Plot %in% c("17", "18", "19", "22", "24","25","27", "28", "30"), "2",
+                                                           ifelse (sample_data(ps.1)$Plot %in% c("33", "34","35","37", "39", "40", "43", "44", "45"), "3",
+                                                                   ifelse(sample_data(ps.1)$Plot %in% c("46", "48", "50", "53", "54", "55", "56", "58", "60"), "4", "NA" ))))
+
+
+
 ```
 Rarefying
 ```{r}
@@ -50,8 +61,17 @@ Rarefying
 
 set.seed(100)
 ps.1.rare <- rarefy_even_depth(ps.1, sample.size=9000, rngseed=TRUE)
+# removed <- sample_data(ps.1)$Samples[!(sample_data(ps.1)$Samples %in% sample_data(ps.1.rare)$Samples)]
+# how many Miscanthus samples were removed 
+# removed.M <- removed[grepl("M", removed)] #17
+# how manu Bulk samples in these 17
+# removed.M.B <- removed.M[grepl("Bulk", removed.M)] #1 
+# ps.1.removed <- subset_samples(ps.1, sample_data(ps.1)$Samples %in% removed.M)
+
+
 ```
 
+- There were 16 samples removed from miscanthus soil samples. 
 ##compare between corn and Miscanthus
 ```{r}
 pcoa.corn.mis <- plot_ordination(ps.1.rare, ordinate(ps.1.rare,"PCoA"), color = "Plant", shape="Plant")+stat_ellipse()
@@ -89,13 +109,28 @@ for (i in 1:length(sample_data(mis.noBulk)$Year)){
   }
 }
 
-# sample_data(mis.noBulk)$Stand_age <- ifelse(sample_data(mis.noBulk)$Year == "2015", "4",
-#                                             ifelse(sample_data(mis.noBulk)$Year=="2016","3",
-#                                                    ifelse(sample_data(mis.noBulk)$Year=="2017","2")))
+
 sample_data(mis.noBulk)$Stand_age <- as.factor(sample_data(mis.noBulk)$Stand_age)
 sample_data(mis.noBulk)$Stand_age <- factor(sample_data(mis.noBulk)$Stand_age, levels=c("4","3","2"))
 saveRDS(mis.noBulk, file="mis_noBulk.rds")
 mis.noBulk<- readRDS("mis_noBulk.rds")
+sample_data(mis.noBulk)$Type <- NULL
+sample_data(mis.noBulk)$Comparing <- NULL
+
+##SRA table downloaded from NCBI
+SRA <- data.table::fread("SraRunTable.txt")
+SRA <- SRA[,c("Sample Name","Run")]
+#merge the metadata with SRA to only keep those in mis.noBulk
+TotalReads <- data.frame(TotalReads=sample_sums(ps.1))
+TotalReads$Samples <- row.names(TotalReads)
+# merge sample_data with total reads
+mis.noBulk.totalReads <- merge(data.frame(sample_data(mis.noBulk)), TotalReads, by="Samples")
+# Merge with SRA to get SRA numbers for each sample
+mis.noBulk.metadata.SRA <- merge(mis.noBulk.totalReads,SRA[,c("Sample Name", "Run")], by.x="Samples", by.y="Sample Name")
+names(mis.noBulk.metadata.SRA) <- mapvalues(names(mis.noBulk.metadata.SRA), "Run", "SRA") # now it has total reads, SRA ,
+mis.noBulk.metadata.SRA.csv <- write.csv(mis.noBulk.metadata.SRA, file="metadata_SRA.csv", row.names = F)
+
+
 mischanthus.noBulk.relative <- transform_sample_counts(mis.noBulk, function(x) x/sum(x))
 ```
 
@@ -127,6 +162,7 @@ alpha.mis.noBulk.N.pvalue <- alpha.mis.noBulk.N + stat_compare_means(comparisons
 ggsave(alpha.mis.noBulk.N.pvalue, file="figures/alpha_diversity_graph_mis_nobulk_figureS2.pdf", units = "in", width=6, height = 5)
 alpha.mis.noBulk.N.pvalue
 ```
+
 
 
 ```{r CDA}
@@ -475,13 +511,82 @@ t <-grid.arrange(grobTree(other_venn),shared.unique.taxa.plot,heights=c(2/5, 3/5
 ggsave(t, file="figures/shared_unique_taxa_vennDiagram_figure3.pdf", units = "in", width=9, height=9)
 ```
 
-```{r abundance-occupancy-plot}
-mis.noBulk.2015.re <- prune_samples(sample_data(mischanthus.noBulk.relative)$Year =="2015", mischanthus.noBulk.relative)
-mis.noBulk.2016.re <- prune_samples(sample_data(mischanthus.noBulk.relative)$Year =="2016", mischanthus.noBulk.relative)
-mis.noBulk.2017.re <- prune_samples(sample_data(mischanthus.noBulk.relative)$Year =="2017", mischanthus.noBulk.relative)
-mis.noBulk.2015.re.abund.occu <- mefa::aoplot(mis.noBulk.2015.re, )
-```
+#### occupancy abundance 
+```{r occupancy_abundance}
+occ_plot <- function(swit16_otu, tempCore){
+	swit16_otu <- swit16_otu[rowSums(swit16_otu)>0,]
+	
+	swit_otu_PA <- 1*((swit16_otu>0)==1)
+	swit_otu_PA <- swit_otu_PA[rowSums(swit_otu_PA)>0,]
+	Occ_swit <- rowSums(swit_otu_PA)/ncol(swit_otu_PA)
+	swit_otu_rel <- decostand(swit16_otu, method="total", MARGIN=2)
+	Mean_abund_swit <- apply(swit_otu_rel, 1, mean)
+	
+	#Creating df for plotting with ggplot and adding color code for the shared and unique OTUs
+	com_abund_swit <- rowSums(swit_otu_rel)
+	color_swit_top <- com_abund_swit
+	color_swit_top[] <- 'black'
+	
+	swit_df_occ <- data.frame(otu=names(Occ_swit), occ=Occ_swit) 
+	swit_df_abun <- data.frame(otu=names(Mean_abund_swit), abun=log10(Mean_abund_swit))
+	switc_col <- data.frame(otu=names(color_swit_top), col=color_swit_top)
+	swit_occ_abun <- left_join(swit_df_abun, swit_df_occ, by='otu')
+	swit_occ_abun <- left_join(swit_occ_abun, switc_col, by='otu')
+	#write.csv(swit_occ_abun, file="mis.occ.abun.csv", row.names=F)
+	swit_occ_abun$core='no'
+	swit_occ_abun$core[as.character(swit_occ_abun$otu) %in% tempCore]='yes'
+	
+	sw16_occ_abun_plot <-ggplot(data=swit_occ_abun, aes(x=abun, y=occ, fill=core)) +
+	  theme_bw()+
+	  geom_point(size=3, pch=21, alpha=.8) +
+	  scale_fill_manual(breaks=unique, values=c('white','red')) +
+	  labs(x=paste('log(mean relative abundace per ASV)\n (n=',nrow(swit_df_abun),'ASVs)',sep=' '), y=paste('Occupancy (n=',ncol(swit_otu_PA),')', sep=' '), fill=NULL) +
+	  theme(legend.position = 'none',
+	        legend.background = element_rect(fill=alpha(0.1)),
+	        panel.border = element_blank(), panel.grid.major = element_blank(),
+	        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+	  scale_y_continuous(breaks=seq(0,1,.2)) +
+	  guides(fill = guide_legend(override.aes = list(alpha = 1)))
+	ggsave("swit_occ_abun.pdf")
+	 return(sw16_occ_abun_plot)
+	
+}
 
+get_color <- function(map_file, category_name, input){ # to have color according to stand age of year
+	result <- NULL
+	tempCore = NULL
+	map_matrix = as.matrix(map_file)
+	for (one_category in unique(map_matrix[, colnames(map_matrix) %in% category_name])){
+		name_sample <- map_file$Samples[map_file$Stand_age== one_category] # This part data specific
+		timed_matrix <- input[,colnames(input) %in% name_sample]
+		timed_matrix <- timed_matrix[rowSums(timed_matrix)>0,]
+	    timed_matrix_PA <- 1*((timed_matrix>0)==1)
+	    timed_matrix_PA <- timed_matrix_PA[rowSums(timed_matrix_PA)>0,]
+	    Occ <- rowSums(timed_matrix_PA)/ncol(timed_matrix_PA)
+	    rel_abun <- decostand(timed_matrix_PA, method="total", MARGIN=2)
+	    Mean_rel_abund <- apply(rel_abun, 1, mean)
+	    df_o <- data.frame(otu=names(Occ), occ=Occ) 
+	    df_a <- data.frame(otu=names(Mean_rel_abund), abun=log10(Mean_rel_abund))
+	    table <- left_join(df_a, df_o, by='otu') %>% mutate(Stand_age = one_category)
+		result <- rbind(result, table)
+		return(result)
+	}
+	
+	occ1 <- result[result$occ == 1,]
+	tempCore <- as.character(unique(occ1$otu))
+
+	return(tempCore)
+}
+
+otu_rare <- otu_table(mis.noBulk)
+meta_data <- sample_data(mis.noBulk)
+
+#tempCore <- get_color(meta_data, 'Stand_age', otu_rare)
+# getting color by the shared membership over the three stand age.
+tempCore=list.2015[list.2015 %in% list.2016[list.2016 %in% list.2017]]
+occu.plot.mis <- occ_plot(otu_rare, tempCore)
+
+```
 
 
 ```{r, eval=FALSE}
@@ -1155,7 +1260,210 @@ ggsave(M2015, file="figures/sig_ASVs_2015_noDays.pdf", units="in", width=6, heig
 
 ```
  
+# rerun DESEq2 with main plot as control
+```{r DESEq)Block_Nitrogen}
+#DESEq with Block as control
+M2017.noRare <- prune_samples(sample_data(mis.noRare.noBulk)$Year=="2017", mis.noRare.noBulk)
+sample_data(M2017.noRare)$Nitrogen <- as.factor(sample_data(M2017.noRare)$Nitrogen)
+sample_data(M2017.noRare)$Block <- as.factor(sample_data(M2017.noRare)$Block)
+#deseq2 will test the effect of the last factor, and take the first as control.
+diagdds= phyloseq_to_deseq2(M2017.noRare, ~Block + Nitrogen )
+diagdds$Nitrogen <- relevel(diagdds$Nitrogen, ref="0") # here is to set the N0 as the reference level by relevel
+diagdds=DESeq(diagdds, test="Wald", fitType="parametric")
+#resultsNames(diagdds)
+#"Intercept"         "Nitrogen_200_vs_0" "Nitrogen_400_vs_0"
+res.2017 <- results(diagdds)
+alpha=0.01
+sigtab = res.2017[which(res.2017$padj < alpha), ]
+#sigtab=cbind(as(sigtab, "data.frame"), as(tax_table(mis.noBulk.2017)[rownames(sigtab), ], "matrix"))
+dim(sigtab)#194
 
+mis.noBulk.2017.relative <- transform_sample_counts(mis.noBulk.2017, function(x) x/sum(x))
+with_abund.sigtab.M2017.N.mainPlot <- subset_taxa(mis.noBulk.2017.relative, taxa_names(mis.noBulk.2017.relative) %in% rownames(sigtab))
+saveRDS(with_abund.sigtab.M2017.N.mainPlot, "with_abund.sigtab.M2017.N.mainPlot.rds")
+
+#2016
+M2016.noRare <- prune_samples(sample_data(mis.noRare.noBulk)$Year=="2016", mis.noRare.noBulk)
+sample_data(M2016.noRare)$Nitrogen <- as.factor(sample_data(M2016.noRare)$Nitrogen)
+sample_data(M2016.noRare)$Block <- as.factor(sample_data(M2016.noRare)$Block)
+#deseq2 will test the effect of the last factor, and take the first as control.
+diagdds= phyloseq_to_deseq2(M2016.noRare, ~Block + Nitrogen )
+diagdds$Nitrogen <- relevel(diagdds$Nitrogen, ref="0") # here is to set the N0 as the reference level by relevel
+diagdds=DESeq(diagdds, test="Wald", fitType="parametric")
+
+res.try.2016 <- results(diagdds.2016)
+alpha=0.01
+sigtab.2016 = res.try.2016[which(res.try.2016$padj < alpha), ]
+
+dim(sigtab.2016)#194
+mis.noBulk.2016.relative <- transform_sample_counts(mis.noBulk.2016, function(x) x/sum(x))
+with_abund.sigtab.M2016.N.mainPlot <- subset_taxa(mis.noBulk.2016.relative, taxa_names(mis.noBulk.2016.relative) %in% rownames(sigtab.2016))
+saveRDS(with_abund.sigtab.M2016.N.mainPlot, "with_abund.sigtab.M2016.N.mainPlot.rds")
+
+#2015 
+
+M2015.noRare <- prune_samples(sample_data(mis.noRare.noBulk)$Year=="2015", mis.noRare.noBulk)
+sample_data(M2015.noRare)$Nitrogen <- as.factor(sample_data(M2015.noRare)$Nitrogen)
+sample_data(M2015.noRare)$Block <- as.factor(sample_data(M2015.noRare)$Block)
+#deseq2 will test the effect of the last factor, and take the first as control.
+diagdds= phyloseq_to_deseq2(M2015.noRare, ~Block + Nitrogen )
+diagdds$Nitrogen <- relevel(diagdds$Nitrogen, ref="0") # here is to set the N0 as the reference level by relevel
+diagdds=DESeq(diagdds, test="Wald", fitType="parametric")
+
+res.2015 <- results(diagdds)
+alpha=0.01
+sigtab.2015 = res.2015[which(res.2015$padj < alpha), ]
+
+dim(sigtab.2015)#47
+mis.noBulk.2015.relative <- transform_sample_counts(mis.noBulk.2015, function(x) x/sum(x))
+with_abund.sigtab.M2015.N.mainPlot <- subset_taxa(mis.noBulk.2015.relative, taxa_names(mis.noBulk.2015.relative) %in% rownames(sigtab.2015))
+saveRDS(with_abund.sigtab.M2015.N.mainPlot, "with_abund.sigtab.M2015.N.mainPlot.rds")
+```
+
+## analyze after DESEq2 with Block+Nitrogen
+```{r analyze_after_DESEq2}
+# 2017 
+with_abund.sigtab.M2017.N.mainPlot <- readRDS(file = "with_abund.sigtab.M2017.N.mainPlot.rds")
+sample_data(with_abund.sigtab.M2017.N.mainPlot)$Days[sample_data(with_abund.sigtab.M2017.N.mainPlot)$Days =="69"] <- "55"
+sample_data(with_abund.sigtab.M2017.N.mainPlot)$Days <- factor(sample_data(with_abund.sigtab.M2017.N.mainPlot)$Days, levels=c("-14","-10","5","21","55"))
+with_abund.sigtab.M2017.N.glom <- conglomerate_taxa(with_abund.sigtab.M2017.N.mainPlot, classification = "Phylum")
+with_abund.sigtab.M2017.N.glom.melt <- melt_phyloseq(with_abund.sigtab.M2017.N.glom)
+with_abund.sigtab.M2017.N.glom.melt.mean <- ddply(with_abund.sigtab.M2017.N.glom.melt, c("OTU","Phylum","Nitrogen","Days"), summarise, mean=mean(Abundance))
+colourCount=length(unique((with_abund.sigtab.M2017.N.glom.melt.mean)$Phylum))
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+M2017.c <- getPalette(colourCount)
+Nitrogen <- c("0"="N0", "200"="N224", "400"="N448")
+sigASVs.M2017.N.bar <- ggplot(data=with_abund.sigtab.M2017.N.glom.melt.mean, mapping = aes_string(x="as.factor(Days)", y="mean"))+
+  geom_bar(aes(fill=Phylum),stat="identity", position="stack")+facet_grid(~Nitrogen,labeller = labeller(Nitrogen=as_labeller(Nitrogen)))+
+  scale_fill_manual(values = M2017.c)+
+  theme(axis.text.x = element_text(angle = 90, size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.y = element_text(angle=90),
+        panel.background=element_rect(fill="white", colour="white"),
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size=8),
+        legend.title=element_text(size=16),
+        legend.position = c(0.2, 0.65),
+        legend.key.size = unit(4, "mm"),
+        axis.line = element_line(colour = "black", size = 1, linetype = "solid"),
+        strip.background = element_rect(colour = "black", fill = "white",size=2, linetype="solid"),
+        strip.text.x = element_text(size=12), 
+        strip.text.y = element_text(size=12)
+  )+
+  xlab("Days after N")+
+  ylab("Relative abundance ")+
+  ylim(c(0.00,0.30))
+sigASVs.M2017.N.bar
+# 2017 sigASVs proteobacteria
+with_abund.sigtab.M2017.N.MainPlot.Proteobacteria <- subset_taxa(with_abund.sigtab.M2017.N.mainPlot, Phylum =="Proteobacteria")
+with_abund.sigtab.M2017.N.Proteobacteria.glom.class <- conglomerate_taxa(with_abund.sigtab.M2017.N.MainPlot.Proteobacteria, classification="Class")
+with_abund.sigtab.M2017.N.Proteobacteria.melt <-  melt_phyloseq(with_abund.sigtab.M2017.N.Proteobacteria.glom.class)
+with_abund.sigtab.M2017.N.Proteobacteria.melt.mean <- ddply(with_abund.sigtab.M2017.N.Proteobacteria.melt, c("OTU","Class","Nitrogen","Days"), summarise, mean=mean(Abundance))
+colourCount=length(unique((with_abund.sigtab.M2017.N.Proteobacteria.melt.mean)$Class))
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+Class.proteobacteria <- ggplot(data=with_abund.sigtab.M2017.N.Proteobacteria.melt.mean, mapping = aes_string(x="as.factor(Days)", y="mean"))+
+  geom_bar(aes(fill=Class),stat="identity", position="stack")+facet_grid(~Nitrogen,labeller = labeller(Nitrogen=as_labeller(Nitrogen)))+
+  scale_fill_manual(values = getPalette(colourCount))+
+  theme(axis.text.x = element_text(angle = 90, size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.y = element_text(angle=90),
+        panel.background=element_rect(fill="white", colour="white"),
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size=8),
+        legend.title=element_text(size=16),
+        legend.position = c(0.2, 0.65),
+        legend.key.size = unit(4, "mm"),
+        axis.line = element_line(colour = "black", size = 1, linetype = "solid"),
+        strip.background = element_rect(colour = "black", fill = "white",size=2, linetype="solid"),
+        strip.text.x = element_text(size=12), 
+        strip.text.y = element_text(size=12)
+  )+
+  xlab("Days after N")+
+  ylab("Relative abundance ")+
+  ylim(c(0.00,0.15))
+Class.proteobacteria
+# 2017 sigASVs Acidobacteria
+with_abund.sigtab.M2017.N.Mainplot.Acidobacteria<- subset_taxa(with_abund.sigtab.M2017.N.mainPlot, Phylum =="Acidobacteria")
+with_abund.sigtab.M2017.N.Acidobacteria.glom.class <- conglomerate_taxa(with_abund.sigtab.M2017.N.Mainplot.Acidobacteria, classification="Class")
+with_abund.sigtab.M2017.N.Acidobacteria.melt <-  melt_phyloseq(with_abund.sigtab.M2017.N.Acidobacteria.glom.class)
+with_abund.sigtab.M2017.N.Acidobacteria.melt.mean <- ddply(with_abund.sigtab.M2017.N.Acidobacteria.melt, c("OTU","Class","Nitrogen","Days"), summarise, mean=mean(Abundance))
+colourCount=length(unique((with_abund.sigtab.M2017.N.Acidobacteria.melt.mean)$Class))
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+Class.Acidobacteria <- ggplot(data=with_abund.sigtab.M2017.N.Acidobacteria.melt.mean, mapping = aes_string(x="as.factor(Days)", y="mean"))+
+  geom_bar(aes(fill=Class),stat="identity", position="stack")+facet_grid(~Nitrogen,labeller = labeller(Nitrogen=as_labeller(Nitrogen)))+
+  scale_fill_manual(values = getPalette(colourCount))+
+  theme(axis.text.x = element_text(angle = 90, size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.y = element_text(angle=90),
+        panel.background=element_rect(fill="white", colour="white"),
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size=8),
+        legend.title=element_text(size=16),
+        legend.position = c(0.2, 0.65),
+        legend.key.size = unit(4, "mm"),
+        axis.line = element_line(colour = "black", size = 1, linetype = "solid"),
+        strip.background = element_rect(colour = "black", fill = "white",size=2, linetype="solid"),
+        strip.text.x = element_text(size=12), 
+        strip.text.y = element_text(size=12)
+  )+
+  xlab("Days after N")+
+  ylab("Relative abundance ")+
+  ylim(c(0.00,0.15))
+Class.Acidobacteria
+
+
+with_abund.sigtab.M2016.N.mainPlot <- readRDS(file="with_abund.sigtab.M2016.N.mainPlot.rds")
+# 2015
+with_abund.sigtab.M2015.N.mainPlot <- readRDS(file= "with_abund.sigtab.M2015.N.mainPlot.rds")
+sample_data(with_abund.sigtab.M2015.N.mainPlot)$Days[sample_data(with_abund.sigtab.M2015.N.mainPlot)$Days =="69"] <- "55"
+sample_data(with_abund.sigtab.M2015.N.mainPlot)$Days <- factor(sample_data(with_abund.sigtab.M2015.N.mainPlot)$Days, levels=c("-14","-10","5","21","55"))
+
+  with_abund.sigtab.M2015.N.glom <- conglomerate_taxa(with_abund.sigtab.M2015.N.mainPlot, classification = "Phylum")
+  with_abund.sigtab.M2015.N.glom.melt <- melt_phyloseq(with_abund.sigtab.M2015.N.glom)
+  with_abund.sigtab.M2015.N.glom.melt.mean <- ddply(with_abund.sigtab.M2015.N.glom.melt, c("OTU","Phylum","Nitrogen","Days"), summarise, mean=mean(Abundance))
+  colourCount=length(unique((with_abund.sigtab.M2015.N.glom.melt.mean)$Phylum))
+  getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+  M2015.c <- getPalette(colourCount)
+  Nitrogen <- c("0"="N0", "200"="N224", "400"="N448")
+  sigASVs.M2015.N.bar <- ggplot(data=with_abund.sigtab.M2015.N.glom.melt.mean, mapping = aes_string(x="as.factor(Days)", y="mean"))+
+    geom_bar(aes(fill=Phylum),stat="identity", position="stack")+facet_grid(~Nitrogen,labeller = labeller(Nitrogen=as_labeller(Nitrogen)))+
+    scale_fill_manual(values = M2017.c[sort(unique((with_abund.sigtab.M2017.N.glom.melt.mean)$Phylum)) %in% sort(unique((with_abund.sigtab.M2015.N.glom.melt.mean)$Phylum))]
+    )+
+    theme(axis.text.x = element_text(angle = 90, size=14),
+          axis.text.y = element_text(size=14),
+          axis.title.y = element_text(angle=90),
+          panel.background=element_rect(fill="white", colour="white"),
+          axis.title = element_text(size = 16),
+          legend.text = element_text(size=8),
+          legend.title=element_text(size=16),
+          legend.position = c(0.2, 0.65),
+          legend.key.size = unit(4, "mm"),
+          axis.line = element_line(colour = "black", size = 1, linetype = "solid"),
+          strip.background = element_rect(colour = "black", fill = "white",size=2, linetype="solid"),
+          strip.text.x = element_text(size=12), 
+          strip.text.y = element_text(size=12)
+    )+
+    xlab("Days after N")+
+    ylab("Relative abundance ")+
+    ylim(c(0.00,0.30))
+sigASVs.M2015.N.bar
+
+# to put them together
+sigASVs.M1516.M17.proteobacteria.Acidobacteria.mainPlot <- ggarrange(sigASVs.M2015.N.bar,sigASVs.M2017.N.bar, Class.Acidobacteria, Class.proteobacteria,
+                                                            labels=c("4-year-old","2-year-old","Acidobacteria", "Proteobacteria"),
+                                                            label.x=0.7,
+                                                            label.y=0.9,
+                                                            ncol=2, 
+                                                            nrow=2)
+ggsave(sigASVs.M1516.M17.proteobacteria.Acidobacteria.mainPlot, file="sigASVs_15_17_acido_proteobacteria_blockNitrogen.pdf", units="in", width=15, height=12)
+sigASVs.M1516.M17.proteobacteria.Acidobacteria
+
+## for those ASVs in with_abund.sigtab.M2017.N.mainPlot and with_abund.sigtab.M2015.N.mainPlot, how many where shared?
+ASV.2017.
+
+ t <- row.names(tax_table(with_abund.sigtab.M2015.N.mainPlot)) %in% row.names(tax_table(with_abund.sigtab.M2017.N.mainPlot))
+table(t)["TRUE"]
+```
 
 After PICRUSt
 ```{r}
@@ -1201,7 +1509,6 @@ sub.N.full.asv<- ggplot(meltedfull.asv, aes(x=as.factor(Stand_age), y = value))+
 sub.N.full.asv.pvalue <- sub.N.full.asv+stat_compare_means(comparisons = comp.stand, label="p.signif", method="t.test")
 sub.N.full.asv.pvalue
 ggsave(sub.N.full.asv.pvalue, file="figures/picrust_full_asv_N_byYEar_figureS4.pdf", units="in", width=9, height=6)
-
 
 
 ```
